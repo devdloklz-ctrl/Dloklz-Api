@@ -1,29 +1,199 @@
 import Order from "../models/Order.js";
 import wooClient from "../utils/wooClient.js";
+import { sendEmail } from "../brevoEmail.js";
+import { newOrderTemplate, orderUpdateTemplate } from "../utils/emailTemplates/index.js";
 
+/**
+ * 🔄 Sync all orders from WooCommerce → MongoDB
+ * Sends "new order" email only for orders that were newly upserted.
+ */
 export const syncOrders = async (req, res) => {
   try {
-    const { data } = await wooClient.get("/orders");
-    for (const order of data) {
-      await Order.findOneAndUpdate(
-        { orderId: order.id },
-        {
-          orderId: order.id,
-          status: order.status,
-          total: order.total,
-          currency: order.currency,
-          customer: {
-            name: order.billing.first_name + " " + order.billing.last_name,
-            email: order.billing.email,
-            phone: order.billing.phone,
-          },
-          items: order.line_items,
-        },
-        { upsert: true }
-      );
+    let allOrders = [];
+    let page = 1;
+    const perPage = 100;
+
+    console.log("🔄 Starting full order sync from WooCommerce...");
+
+    // 🧾 Fetch all pages from WooCommerce
+    while (true) {
+      const { data } = await wooClient.get("/orders", {
+        params: { per_page: perPage, page },
+      });
+
+      if (!Array.isArray(data) || data.length === 0) break;
+
+      allOrders.push(...data);
+      console.log(`📦 Page ${page} fetched (${data.length} orders)`);
+
+      if (data.length < perPage) break;
+      page++;
     }
-    res.json({ message: "Orders synced successfully" });
+
+    console.log(`✅ Total WooCommerce orders fetched: ${allOrders.length}`);
+
+    if (allOrders.length === 0) {
+      return res.json({ message: "No new orders to sync", totalOrders: 0 });
+    }
+
+    // 🧮 Prepare bulk upsert operations
+    const bulkOps = allOrders.map((order) => ({
+      updateOne: {
+        filter: { orderId: order.id },
+        update: {
+          $set: {
+            orderId: order.id,
+            status: order.status,
+            total: order.total,
+            currency: order.currency,
+            payment: order.payment_method_title || "N/A",
+            customer: {
+              name: `${order.billing?.first_name || ""} ${order.billing?.last_name || ""}`.trim(),
+              email: order.billing?.email || "",
+              phone: order.billing?.phone || "",
+              address: order.billing?.address_1 || "",
+            },
+            items: order.line_items || [],
+            date_created: order.date_created,
+            date_modified: order.date_modified,
+          },
+        },
+        upsert: true,
+      },
+    }));
+
+    // 🧾 Execute bulk write
+    const result = bulkOps.length > 0 ? await Order.bulkWrite(bulkOps) : null;
+
+    if (result) {
+      console.log("🧾 Bulk operation summary:", {
+        matched: result.matchedCount,
+        upserted: result.upsertedCount,
+        modified: result.modifiedCount,
+      });
+    }
+
+    console.log("📨 Processing new order emails...");
+    // 📨 Send "new order" emails for upserted (new) orders only
+    if (result?.upsertedCount > 0 && result.upsertedIds) {
+      const upsertedOrderIds = Object.values(result.upsertedIds).map(String);
+
+      // 🔍 Match WooCommerce orders with upserted Mongo IDs
+      const newOrders = allOrders.filter((order) =>
+        upsertedOrderIds.includes(String(order.id))
+      );
+
+      console.log(`🆕 New orders detected: ${newOrders.length}`);
+
+      const emailPromises = newOrders.map(async (wcOrder) => {
+        const orderData = {
+          orderId: wcOrder.id,
+          status: wcOrder.status,
+          total: wcOrder.total,
+          currency: wcOrder.currency,
+          payment: wcOrder.payment_method_title || "N/A",
+          customer: {
+            name: `${wcOrder.billing?.first_name || ""} ${wcOrder.billing?.last_name || ""}`.trim(),
+            email: wcOrder.billing?.email || "",
+            phone: wcOrder.billing?.phone || "",
+            address: wcOrder.billing?.address_1 || "",
+          },
+          items: wcOrder.line_items || [],
+        };
+
+        if (!orderData.customer.email) {
+          console.log(`⚠️ Skipping email for order ${orderData.orderId} — no customer email`);
+          return { ok: false, orderId: orderData.orderId, error: "No email" };
+        }
+
+        console.log(`📨 Sending new order email for Order #${orderData.orderId} → ${orderData.customer.email}`);
+
+        try {
+          await sendEmail({
+            to: orderData.customer.email,
+            subject: `✅ Order Placed Successfully (#${orderData.orderId})`,
+            html: newOrderTemplate(orderData),
+          });
+          return { ok: true, orderId: orderData.orderId };
+        } catch (err) {
+          console.error(`❌ Failed to send email for Order #${orderData.orderId}:`, err.message);
+          return { ok: false, orderId: orderData.orderId, error: err.message };
+        }
+      });
+
+      const emailResults = await Promise.all(emailPromises);
+      const successes = emailResults.filter((r) => r.ok).length;
+      const failures = emailResults.length - successes;
+      console.log(`📧 New order emails sent: ${successes}, failed: ${failures}`);
+    }
+
+    console.log("✅ Orders synced successfully with MongoDB");
+
+    return res.json({
+      message: "Orders synced successfully",
+      totalOrders: allOrders.length,
+      upsertedCount: result?.upsertedCount || 0,
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ Woo Sync Error:", err.response?.data || err.message);
+    return res.status(500).json({ message: err.response?.data || err.message });
+  }
+};
+
+/**
+ * 🔁 Update order status in WooCommerce + MongoDB + Send Email
+ */
+export const updateWooOrder = async (req, res) => {
+  try {
+    const { orderId, status } = req.body;
+    if (!orderId || !status) {
+      return res.status(400).json({ message: "orderId and status are required" });
+    }
+
+    // 🟢 Fetch full local order from MongoDB
+    const localOrder = await Order.findOne({ orderId });
+    if (!localOrder) {
+      return res.status(404).json({ message: "Order not found in local database" });
+    }
+
+    // 🟢 Update status in WooCommerce
+    const { data } = await wooClient.put(`/orders/${orderId}`, { status });
+
+    // 🟢 Reflect the change locally
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId },
+      { status: data.status, total: data.total },
+      { new: true }
+    );
+
+    console.log(`🔄 Synced status to WooCommerce → Order #${orderId}: ${data.status}`);
+
+    // 📨 Send email with FULL order data
+    const customerEmail = updatedOrder?.customer?.email;
+    if (customerEmail) {
+      console.log(`📧 Preparing to send update email to ${customerEmail}`);
+
+      const success = await sendEmail({
+        to: customerEmail,
+        subject: `📦 Order Update (#${orderId}) – ${data.status.toUpperCase()}`,
+        html: orderUpdateTemplate(updatedOrder),
+      });
+
+      console.log(`📧 Email send result:`, success);
+    } else {
+      console.log(`⚠️ No customer email found for Order #${orderId}`);
+    }
+
+    return res.json({
+      message: "Order updated successfully on WooCommerce and MongoDB",
+      orderId,
+      status: updatedOrder.status,
+    });
+  } catch (err) {
+    console.error("❌ WooCommerce Update Error:", err.response?.data || err.message);
+    return res.status(500).json({
+      message: "Failed to update WooCommerce order",
+      error: err.response?.data || err.message,
+    });
   }
 };
