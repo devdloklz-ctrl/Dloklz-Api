@@ -34,7 +34,7 @@ export const handleWooWebhook = async (req, res) => {
     const deliveryId = req.headers["x-wc-webhook-delivery-id"];
     const rawBody = req.body;
 
-    // ✅ WooCommerce test ping
+    // ✅ WooCommerce sometimes sends GET test pings
     if (!topic) {
       console.log("✅ WooCommerce webhook test ping received");
       return res.status(200).json({ message: "Ping acknowledged" });
@@ -52,38 +52,69 @@ export const handleWooWebhook = async (req, res) => {
       return res.status(401).json({ message: "Invalid webhook signature" });
     }
 
-    const rawString = rawBody.toString("utf8");
+    // ✅ Parse JSON
     let data;
-
     try {
-      data = JSON.parse(rawString);
+      data = JSON.parse(rawBody.toString("utf8"));
     } catch (err) {
       console.error("❌ Failed to parse JSON:", err.message);
       return res.status(400).json({ message: "Invalid JSON body" });
     }
 
-    console.log(`📦 Webhook received: ${topic} | Delivery ID: ${deliveryId} | Order ID: ${data.id}`);
+    const orderId = data.id;
+    console.log(`📦 Webhook received: ${topic} | Delivery ID: ${deliveryId} | Order ID: ${orderId}`);
 
-    // ✅ Store full data
-    await Order.findOneAndUpdate(
-      { orderId: data.id },
-      { $set: { fullData: data, status: data.status, total: data.total } },
+    // ✅ Map WooCommerce fields to MongoDB schema
+    const mappedOrder = {
+      orderId,
+      status: data.status,
+      total: data.total,
+      currency: data.currency,
+      paymentMethod: data.payment_method,
+      dateCreated: data.date_created,
+      dateModified: data.date_modified,
+      customer: {
+        name: `${data.billing?.first_name || ""} ${data.billing?.last_name || ""}`.trim(),
+        email: data.billing?.email || "",
+        phone: data.billing?.phone || "",
+        address: `${data.billing?.address_1 || ""}, ${data.billing?.city || ""}, ${data.billing?.state || ""}, ${data.billing?.country || ""}`.trim(),
+      },
+      items:
+        data.line_items?.map((item) => ({
+          productId: item.product_id,
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price,
+          total: item.total,
+          sku: item.sku || "",
+        })) || [],
+      notes: data.customer_note || "",
+      shippingMethod: data.shipping_lines?.[0]?.method_title || "",
+      fullData: data,
+      webhookTopic: topic,
+      webhookDeliveryId: deliveryId,
+    };
+
+    // ✅ Save or update in MongoDB
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderId },
+      { $set: mappedOrder },
       { upsert: true, new: true }
     );
 
-    console.log(`✅ Order ${data.id} saved/updated in MongoDB (${topic})`);
+    console.log(`✅ Order ${orderId} saved/updated in MongoDB (${topic})`);
 
     // ✅ Send email only for new orders
-    if (topic === "order.created" && data.billing?.email) {
+    if (topic === "order.created" && mappedOrder.customer.email) {
       try {
         await sendEmail({
-          to: data.billing.email,
-          subject: `✅ Order Placed Successfully (#${data.id})`,
+          to: mappedOrder.customer.email,
+          subject: `✅ Order Placed Successfully (#${orderId})`,
           html: newOrderTemplate(data),
         });
-        console.log(`📧 Email sent to ${data.billing.email}`);
+        console.log(`📧 Email sent to ${mappedOrder.customer.email}`);
       } catch (err) {
-        console.error(`❌ Failed to send email for Order #${data.id}:`, err.message);
+        console.error(`❌ Failed to send email for Order #${orderId}:`, err.message);
       }
     }
 
