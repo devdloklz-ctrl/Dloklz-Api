@@ -17,13 +17,15 @@ connectDB();
 
 const app = express();
 app.use(cors());
+
+app.use("/api/webhooks", webhookRoute);
+
 app.use(bodyParser.json());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/webhook", webhookRoutes);
-app.use("/api/webhooks", webhookRoute);
 
 app.use("/api/test", testEmail);
 

@@ -5,69 +5,91 @@ import { newOrderTemplate } from "../utils/emailTemplates/index.js";
 
 const WEBHOOK_SECRET = process.env.WC_WEBHOOK_SECRET || "Dloklz@123";
 
-const verifySignature = (req) => {
-  const signature = req.headers["x-wc-webhook-signature"];
+/**
+ * Verify WooCommerce webhook signature
+ * Must use the RAW request body for HMAC validation
+ */
+const verifySignature = (rawBody, headers) => {
+  const signature = headers["x-wc-webhook-signature"];
   if (!signature) return false;
 
-  const payload = JSON.stringify(req.body);
   const expectedSignature = crypto
     .createHmac("sha256", WEBHOOK_SECRET)
-    .update(payload, "utf8")
+    .update(rawBody, "utf8")
     .digest("base64");
 
   return signature === expectedSignature;
 };
 
+/**
+ * Handle incoming WooCommerce webhook (order.created / order.updated)
+ */
 export const handleWooWebhook = async (req, res) => {
   try {
-    // 🧾 Verify signature
-    if (!verifySignature(req)) {
-      console.warn("⚠️ Webhook signature mismatch");
+    const topic = req.headers["x-wc-webhook-topic"];
+    const deliveryId = req.headers["x-wc-webhook-delivery-id"];
+    const rawBody = req.body instanceof Buffer ? req.body : Buffer.from(JSON.stringify(req.body));
+
+    // 🧾 Handle test pings from WooCommerce (no signature sent)
+    if (!topic) {
+      console.log("✅ Received WooCommerce webhook test ping");
+      return res.status(200).json({ success: true, message: "Ping acknowledged" });
+    }
+
+    // 🔐 Verify the signature
+    if (!verifySignature(rawBody, req.headers)) {
+      console.warn("⚠️ Invalid WooCommerce webhook signature");
       return res.status(401).json({ message: "Invalid webhook signature" });
     }
 
-    const eventType = req.headers["x-wc-webhook-topic"];
-    const order = req.body;
+    // Parse JSON if needed
+    const data = JSON.parse(rawBody.toString());
+    console.log(`📦 Webhook received: ${topic} | Delivery ID: ${deliveryId} | Order ID: ${data.id}`);
 
-    console.log(`📩 Webhook received: ${eventType} | Order ID: ${order.id}`);
-
+    // 🧠 Prepare order data for MongoDB
     const orderData = {
-      orderId: order.id,
-      status: order.status,
-      total: order.total,
-      currency: order.currency,
-      payment: order.payment_method_title || "N/A",
+      orderId: data.id,
+      status: data.status,
+      total: data.total,
+      currency: data.currency,
+      payment: data.payment_method_title || "N/A",
       customer: {
-        name: `${order.billing?.first_name || ""} ${order.billing?.last_name || ""}`.trim(),
-        email: order.billing?.email || "",
-        phone: order.billing?.phone || "",
-        address: order.billing?.address_1 || "",
+        name: `${data.billing?.first_name || ""} ${data.billing?.last_name || ""}`.trim(),
+        email: data.billing?.email || "",
+        phone: data.billing?.phone || "",
+        address: data.billing?.address_1 || "",
       },
-      items: order.line_items || [],
-      date_created: order.date_created,
-      date_modified: order.date_modified,
+      items: data.line_items || [],
+      date_created: data.date_created,
+      date_modified: data.date_modified,
     };
 
-    // 🧠 Upsert into MongoDB
+    // 🧾 Upsert into MongoDB
     const updatedOrder = await Order.findOneAndUpdate(
-      { orderId: order.id },
+      { orderId: data.id },
       { $set: orderData },
       { upsert: true, new: true }
     );
 
-    // 📧 Send email only when order is created
-    if (eventType === "order.created" && orderData.customer.email) {
-      await sendEmail({
-        to: orderData.customer.email,
-        subject: `✅ Order Placed Successfully (#${orderData.orderId})`,
-        html: newOrderTemplate(orderData),
-      });
+    console.log(`✅ Order ${data.id} saved/updated in MongoDB (${topic})`);
+
+    // 📨 Send customer email only for "order.created"
+    if (topic === "order.created" && orderData.customer.email) {
+      try {
+        await sendEmail({
+          to: orderData.customer.email,
+          subject: `✅ Order Placed Successfully (#${orderData.orderId})`,
+          html: newOrderTemplate(orderData),
+        });
+        console.log(`📧 Order confirmation email sent to ${orderData.customer.email}`);
+      } catch (err) {
+        console.error(`❌ Failed to send email for Order #${orderData.orderId}:`, err.message);
+      }
     }
 
-    console.log(`✅ Webhook processed: ${eventType} for Order #${order.id}`);
-    res.status(200).json({ success: true });
+    res.status(200).json({ success: true, message: "Webhook processed" });
   } catch (error) {
-    console.error("❌ Webhook error:", error.message);
-    res.status(500).json({ error: error.message });
+    console.error("❌ Webhook processing error:", error.message);
+    res.status(500).json({ success: false, error: error.message });
   }
 };
