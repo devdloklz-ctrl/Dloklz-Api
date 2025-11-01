@@ -110,7 +110,7 @@ export const handleWooWebhook = async (req, res) => {
         await sendEmail({
           to: mappedOrder.customer.email,
           subject: `✅ Order Placed Successfully (#${orderId})`,
-          html: newOrderTemplate(data),
+          html: newOrderTemplate(mappedOrder),
         });
         console.log(`📧 Email sent to ${mappedOrder.customer.email}`);
       } catch (err) {

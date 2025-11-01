@@ -48,7 +48,7 @@ export const newOrderTemplate = (order) => {
           </tr>
           <tr>
             <td style="padding: 12px 16px; font-weight: 600;">Payment Method</td>
-            <td style="padding: 12px 16px;">${order.payment || "N/A"}</td>
+            <td style="padding: 12px 16px;">${order.paymentMethod || "N/A"}</td>
           </tr>
           <tr style="background: #f3f4f6;">
             <td style="padding: 12px 16px; font-weight: 600;">Total Amount</td>
