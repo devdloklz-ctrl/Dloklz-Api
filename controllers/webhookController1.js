@@ -6,7 +6,7 @@ import { newOrderTemplate } from "../utils/emailTemplates/index.js";
 const WEBHOOK_SECRET = process.env.WC_WEBHOOK_SECRET || "Dloklz@123";
 
 /**
- * 🧩 Verify WooCommerce webhook signature
+ * ✅ Verify WooCommerce webhook signature
  */
 const verifySignature = (rawBody, headers) => {
   const signature = headers["x-wc-webhook-signature"];
@@ -19,7 +19,6 @@ const verifySignature = (rawBody, headers) => {
       .digest("base64");
 
     return signature === expectedSignature;
-    console.log("✅ Signature verified successfully");
   } catch (err) {
     console.error("❌ Signature verification failed:", err.message);
     return false;
@@ -35,75 +34,56 @@ export const handleWooWebhook = async (req, res) => {
     const deliveryId = req.headers["x-wc-webhook-delivery-id"];
     const rawBody = req.body;
 
-    // Ensure rawBody is a Buffer
+    // ✅ WooCommerce test ping
+    if (!topic) {
+      console.log("✅ WooCommerce webhook test ping received");
+      return res.status(200).json({ message: "Ping acknowledged" });
+    }
+
+    // ✅ Validate Buffer
     if (!Buffer.isBuffer(rawBody)) {
       console.warn("⚠️ Raw body is not a Buffer. Webhook may fail verification.");
       return res.status(400).json({ message: "Invalid raw body format" });
     }
 
-    const rawString = rawBody.toString("utf8");
-
-    // Handle WooCommerce test webhook (ping)
-    if (!topic) {
-      console.log("✅ Received WooCommerce webhook test ping");
-      return res.status(200).json({ success: true, message: "Ping acknowledged" });
-    }
-
-    // Verify HMAC signature
+    // ✅ Verify signature
     if (!verifySignature(rawBody, req.headers)) {
       console.warn("⚠️ Invalid WooCommerce webhook signature");
       return res.status(401).json({ message: "Invalid webhook signature" });
     }
 
-    // Parse JSON payload
+    const rawString = rawBody.toString("utf8");
     let data;
+
     try {
       data = JSON.parse(rawString);
-    } catch (parseErr) {
-      console.error("❌ Failed to parse webhook JSON:", parseErr.message);
+    } catch (err) {
+      console.error("❌ Failed to parse JSON:", err.message);
       return res.status(400).json({ message: "Invalid JSON body" });
     }
 
     console.log(`📦 Webhook received: ${topic} | Delivery ID: ${deliveryId} | Order ID: ${data.id}`);
 
-    // Prepare order data
-    const orderData = {
-      orderId: data.id,
-      status: data.status,
-      total: data.total,
-      currency: data.currency,
-      payment: data.payment_method_title || "N/A",
-      customer: {
-        name: `${data.billing?.first_name || ""} ${data.billing?.last_name || ""}`.trim(),
-        email: data.billing?.email || "",
-        phone: data.billing?.phone || "",
-        address: data.billing?.address_1 || "",
-      },
-      items: data.line_items || [],
-      date_created: data.date_created,
-      date_modified: data.date_modified,
-    };
-
-    // Upsert in MongoDB
+    // ✅ Store full data
     await Order.findOneAndUpdate(
       { orderId: data.id },
-      { $set: orderData },
+      { $set: { fullData: data, status: data.status, total: data.total } },
       { upsert: true, new: true }
     );
 
     console.log(`✅ Order ${data.id} saved/updated in MongoDB (${topic})`);
 
-    // Send email only for new orders
-    if (topic === "order.created" && orderData.customer.email) {
+    // ✅ Send email only for new orders
+    if (topic === "order.created" && data.billing?.email) {
       try {
         await sendEmail({
-          to: orderData.customer.email,
-          subject: `✅ Order Placed Successfully (#${orderData.orderId})`,
-          html: newOrderTemplate(orderData),
+          to: data.billing.email,
+          subject: `✅ Order Placed Successfully (#${data.id})`,
+          html: newOrderTemplate(data),
         });
-        console.log(`📧 Email sent to ${orderData.customer.email}`);
+        console.log(`📧 Email sent to ${data.billing.email}`);
       } catch (err) {
-        console.error(`❌ Failed to send email for Order #${orderData.orderId}:`, err.message);
+        console.error(`❌ Failed to send email for Order #${data.id}:`, err.message);
       }
     }
 
