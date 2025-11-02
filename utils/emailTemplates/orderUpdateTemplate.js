@@ -1,5 +1,4 @@
 export const orderUpdateTemplate = (order) => {
-  console.log("🧾 Incoming order data:", JSON.stringify(order, null, 2));
 
   const customer = order.customer || {};
   const customerName = customer.name || "N/A";
