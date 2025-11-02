@@ -2,6 +2,7 @@ import crypto from "crypto";
 import Order from "../models/Order.js";
 import { sendEmail } from "../brevoEmail.js";
 import { newOrderTemplate } from "../utils/emailTemplates/index.js";
+import { sendSMS } from "../utils/twilio/smsService.js"; // <-- make sure path is correct
 
 const WEBHOOK_SECRET = process.env.WC_WEBHOOK_SECRET || "Dloklz@123";
 
@@ -34,13 +35,13 @@ export const handleWooWebhook = async (req, res) => {
     const deliveryId = req.headers["x-wc-webhook-delivery-id"];
     const rawBody = req.body;
 
-    // ✅ WooCommerce sometimes sends GET test pings
+    // ✅ Handle WooCommerce test ping
     if (!topic) {
       console.log("✅ WooCommerce webhook test ping received");
       return res.status(200).json({ message: "Ping acknowledged" });
     }
 
-    // ✅ Validate Buffer
+    // ✅ Validate raw body
     if (!Buffer.isBuffer(rawBody)) {
       console.warn("⚠️ Raw body is not a Buffer. Webhook may fail verification.");
       return res.status(400).json({ message: "Invalid raw body format" });
@@ -52,7 +53,7 @@ export const handleWooWebhook = async (req, res) => {
       return res.status(401).json({ message: "Invalid webhook signature" });
     }
 
-    // ✅ Parse JSON
+    // ✅ Parse JSON payload
     let data;
     try {
       data = JSON.parse(rawBody.toString("utf8"));
@@ -64,7 +65,7 @@ export const handleWooWebhook = async (req, res) => {
     const orderId = data.id;
     console.log(`📦 Webhook received: ${topic} | Delivery ID: ${deliveryId} | Order ID: ${orderId}`);
 
-    // ✅ Map WooCommerce fields to MongoDB schema
+    // ✅ Map WooCommerce order to Mongo schema
     const mappedOrder = {
       orderId,
       status: data.status,
@@ -95,7 +96,7 @@ export const handleWooWebhook = async (req, res) => {
       webhookDeliveryId: deliveryId,
     };
 
-    // ✅ Save or update in MongoDB
+    // ✅ Save or update order in MongoDB
     const updatedOrder = await Order.findOneAndUpdate(
       { orderId },
       { $set: mappedOrder },
@@ -104,17 +105,42 @@ export const handleWooWebhook = async (req, res) => {
 
     console.log(`✅ Order ${orderId} saved/updated in MongoDB (${topic})`);
 
-    // ✅ Send email only for new orders
-    if (topic === "order.created" && mappedOrder.customer.email) {
-      try {
-        await sendEmail({
-          to: mappedOrder.customer.email,
-          subject: `✅ Order Placed Successfully (#${orderId})`,
-          html: newOrderTemplate(mappedOrder),
-        });
-        console.log(`📧 Email sent to ${mappedOrder.customer.email}`);
-      } catch (err) {
-        console.error(`❌ Failed to send email for Order #${orderId}:`, err.message);
+    // ✅ Send email + SMS only for new orders
+    if (topic === "order.created") {
+      const { email, phone, name } = mappedOrder.customer;
+
+      // Send Email
+      if (email) {
+        try {
+          await sendEmail({
+            to: email,
+            subject: `✅ Order Placed Successfully (#${orderId})`,
+            html: newOrderTemplate(mappedOrder),
+          });
+          console.log(`📧 Email sent to ${email}`);
+        } catch (err) {
+          console.error(`❌ Failed to send email for Order #${orderId}:`, err.message);
+        }
+      } else {
+        console.warn(`⚠️ No customer email found for Order #${orderId}, skipping email.`);
+      }
+
+      // Send SMS
+      if (phone && phone.trim() !== "") {
+        const smsMessage = `Hi ${name || "Customer"}, your order #${orderId} of ₹${mappedOrder.total} has been placed successfully. We'll notify you once it's updated. - Dloklz Store Team`;
+
+        try {
+          const smsResult = await sendSMS(phone, smsMessage);
+          if (smsResult?.ok) {
+            console.log(`📩 SMS sent to ${phone}`);
+          } else {
+            console.warn(`⚠️ SMS failed for Order #${orderId}: ${smsResult?.error || "Unknown error"}`);
+          }
+        } catch (smsErr) {
+          console.error(`❌ SMS send error for Order #${orderId}:`, smsErr.message);
+        }
+      } else {
+        console.warn(`⚠️ No valid phone number for Order #${orderId}, skipping SMS.`);
       }
     }
 

@@ -176,10 +176,6 @@ export const syncOrders = async (req, res) => {
             html: newOrderTemplate(orderData),
           });
 
-          // Send SMS
-          const smsMessage = `Hi ${orderData.customer.name || "Customer"}, your order #${orderData.orderId} of ₹${orderData.total} has been placed successfully. We'll notify you once it's updated. - Dloklz Store Team`;
-          await sendSMS(orderData.customer.phone, smsMessage);
-
           return { ok: true, orderId: orderData.orderId };
         } catch (err) {
           console.error(`❌ Failed to send email for Order #${orderData.orderId}:`, err.message);
@@ -255,7 +251,6 @@ export const updateWooOrder = async (req, res) => {
 
     // 📱 Send SMS
     const customerPhone = updatedOrder?.customer?.phone;
-    console.log(`📱 Preparing to send SMS to ${customerPhone}`);
     if (customerPhone) {
       try {
         const smsMessage = `Your order #${orderId} status has been updated to "${data.status}". - Dloklz Store Team`;
