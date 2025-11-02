@@ -1,8 +1,11 @@
+import dotenv from "dotenv";
+dotenv.config(); // ✅ Ensure env vars are loaded early
+
 import crypto from "crypto";
 import Order from "../models/Order.js";
 import { sendEmail } from "../brevoEmail.js";
 import { newOrderTemplate } from "../utils/emailTemplates/index.js";
-import { sendSMS } from "../utils/twilio/smsService.js"; // <-- make sure path is correct
+import { sendSMS } from "../utils/twilio/smsService.js";
 
 const WEBHOOK_SECRET = process.env.WC_WEBHOOK_SECRET || "Dloklz@123";
 
@@ -18,7 +21,6 @@ const verifySignature = (rawBody, headers) => {
       .createHmac("sha256", WEBHOOK_SECRET)
       .update(rawBody)
       .digest("base64");
-
     return signature === expectedSignature;
   } catch (err) {
     console.error("❌ Signature verification failed:", err.message);
@@ -109,7 +111,13 @@ export const handleWooWebhook = async (req, res) => {
     if (topic === "order.created") {
       const { email, phone, name } = mappedOrder.customer;
 
-      // Send Email
+      // 🧩 Check Twilio config before trying SMS
+      console.log("🧩 Twilio Env Check:", {
+        SID: process.env.TWILIO_SID ? "✅" : "❌ missing",
+        FROM: process.env.TWILIO_PHONE_NUMBER || "❌ missing",
+      });
+
+      // ✉️ Send Email
       if (email) {
         try {
           await sendEmail({
@@ -125,16 +133,15 @@ export const handleWooWebhook = async (req, res) => {
         console.warn(`⚠️ No customer email found for Order #${orderId}, skipping email.`);
       }
 
-      // Send SMS
+      // 📱 Send SMS
       if (phone && phone.trim() !== "") {
         const smsMessage = `Hi ${name || "Customer"}, your order #${orderId} of ₹${mappedOrder.total} has been placed successfully. We'll notify you once it's updated. - Dloklz Store Team`;
-
         try {
           const smsResult = await sendSMS(phone, smsMessage);
-          if (smsResult?.ok) {
-            console.log(`📩 SMS sent to ${phone}`);
+          if (smsResult.ok) {
+            console.log(`📩 SMS sent to ${phone} (SID: ${smsResult.sid})`);
           } else {
-            console.warn(`⚠️ SMS failed for Order #${orderId}: ${smsResult?.error || "Unknown error"}`);
+            console.warn(`⚠️ SMS failed for Order #${orderId}: ${smsResult.error}`);
           }
         } catch (smsErr) {
           console.error(`❌ SMS send error for Order #${orderId}:`, smsErr.message);

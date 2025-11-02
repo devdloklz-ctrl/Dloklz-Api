@@ -26,8 +26,8 @@ export const sendSMS = async (phone, message) => {
     // ✅ Use MessagingServiceSid if available, otherwise fallback to phone number
     if (process.env.TWILIO_MESSAGING_SERVICE_SID) {
       params.messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
-    } else if (process.env.TWILIO_PHONE_NUMBER) {
-      params.from = process.env.TWILIO_PHONE_NUMBER;
+    } else if (process.env.TWILIO_SMS_NUMBER) {
+      params.from = process.env.TWILIO_SMS_NUMBER;
     } else {
       throw new Error("Missing Twilio 'from' configuration");
     }
