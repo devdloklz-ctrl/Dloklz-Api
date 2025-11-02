@@ -255,9 +255,9 @@ export const updateWooOrder = async (req, res) => {
 
     // 📱 Send SMS
     const customerPhone = updatedOrder?.customer?.phone;
+    console.log(`📱 Preparing to send SMS to ${customerPhone}`);
     if (customerPhone) {
       try {
-        console.log(`📱 Preparing to send SMS to ${customerPhone}`);
         const smsMessage = `Your order #${orderId} status has been updated to "${data.status}". - Dloklz Store Team`;
         await sendSMS(customerPhone, smsMessage);
         console.log(`📩 SMS sent to ${customerPhone}`);
