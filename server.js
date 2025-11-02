@@ -14,6 +14,7 @@ import productRoutes from "./routes/products.js";
 import testEmail from "./routes/testEmail.js";
 import testWhatsapp from "./routes/test-whatsapp.js";
 import testSMS from "./routes/testSMS.js";
+import vendorRoutes from "./routes/vendorRoutes.js";
 
 dotenv.config();
 
@@ -35,6 +36,9 @@ app.use("/api/users", userRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/products", productRoutes); // 🆕 Product management routes
 app.use("/api/webhook", webhookRoutes); // (Optional older webhook)
+app.use("/api/vendors", vendorRoutes); // 🆕 Vendor management routes
+
+// Test Routes
 app.use("/api/test", testEmail);
 app.use("/api/test/whatsapp", testWhatsapp);
 app.use("/api/test/sms", testSMS);
