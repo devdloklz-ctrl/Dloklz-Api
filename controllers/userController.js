@@ -22,16 +22,46 @@ export const getProfile = async (req, res) => {
   }
 };
 
-// Update vendor profile
-export const updateProfile = async (req, res) => {
+/**
+ * Get a single user by ID (Owner only)
+ */
+export const getUserById = async (req, res) => {
   try {
-    const { name, password } = req.body;
-    const updates = {};
-    if (name) updates.name = name;
-    if (password) updates.password = await bcrypt.hash(password, 10);
-
-    const user = await User.findByIdAndUpdate(req.user.id, updates, { new: true }).select("-password");
+    const user = await User.findById(req.params.id).select("-password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
     res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * Update any user (Owner only)
+ */
+export const updateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, password, role, vendorId } = req.body;
+
+    const updates = {};
+
+    if (name !== undefined) updates.name = name;
+    if (role !== undefined) updates.role = role;
+    if (vendorId !== undefined) updates.vendorId = vendorId;
+
+    if (password) {
+      updates.password = await bcrypt.hash(password, 10);
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(id, updates, { new: true }).select("-password");
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({ message: "User updated successfully", user: updatedUser });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
