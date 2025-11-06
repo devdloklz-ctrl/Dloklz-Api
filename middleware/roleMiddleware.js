@@ -1,5 +1,7 @@
-export const roleMiddleware = (role) => (req, res, next) => {
-  if (req.user.role !== role)
+// middleware/roleMiddleware.js
+export const roleMiddleware = (...allowedRoles) => (req, res, next) => {
+  if (!allowedRoles.includes(req.user.role)) {
     return res.status(403).json({ message: "Access denied" });
+  }
   next();
 };

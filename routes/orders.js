@@ -12,6 +12,6 @@ router.get("/", authMiddleware, roleMiddleware("owner", "vendor"), getAllOrders)
 router.get("/sync", authMiddleware, roleMiddleware("owner"), syncOrders);
 
 // Update WooCommerce from MongoDB
-router.put("/update", authMiddleware, roleMiddleware("owner"), updateWooOrder);
+router.put("/update", authMiddleware, roleMiddleware("owner", "vendor"), updateWooOrder);
 
 export default router;

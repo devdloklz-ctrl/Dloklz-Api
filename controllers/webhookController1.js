@@ -1,17 +1,16 @@
 import dotenv from "dotenv";
-dotenv.config(); // ✅ Ensure env vars are loaded early
+dotenv.config();
 
 import crypto from "crypto";
 import Order from "../models/Order.js";
+import Vendor from "../models/Vendor.js"; // ✅ import vendor model
 import { sendEmail } from "../brevoEmail.js";
 import { newOrderTemplate } from "../utils/emailTemplates/index.js";
 import { sendSMS } from "../utils/twilio/smsService.js";
 
 const WEBHOOK_SECRET = process.env.WC_WEBHOOK_SECRET || "Dloklz@123";
 
-/**
- * ✅ Verify WooCommerce webhook signature
- */
+/** Verify WooCommerce webhook signature */
 const verifySignature = (rawBody, headers) => {
   const signature = headers["x-wc-webhook-signature"];
   if (!signature || !rawBody) return false;
@@ -28,34 +27,17 @@ const verifySignature = (rawBody, headers) => {
   }
 };
 
-/**
- * 🚀 WooCommerce Webhook Handler
- */
+/** WooCommerce Webhook Handler */
 export const handleWooWebhook = async (req, res) => {
   try {
     const topic = req.headers["x-wc-webhook-topic"];
     const deliveryId = req.headers["x-wc-webhook-delivery-id"];
     const rawBody = req.body;
 
-    // ✅ Handle WooCommerce test ping
-    if (!topic) {
-      console.log("✅ WooCommerce webhook test ping received");
-      return res.status(200).json({ message: "Ping acknowledged" });
-    }
+    if (!topic) return res.status(200).json({ message: "Ping acknowledged" });
+    if (!Buffer.isBuffer(rawBody)) return res.status(400).json({ message: "Invalid raw body format" });
+    if (!verifySignature(rawBody, req.headers)) return res.status(401).json({ message: "Invalid webhook signature" });
 
-    // ✅ Validate raw body
-    if (!Buffer.isBuffer(rawBody)) {
-      console.warn("⚠️ Raw body is not a Buffer. Webhook may fail verification.");
-      return res.status(400).json({ message: "Invalid raw body format" });
-    }
-
-    // ✅ Verify signature
-    if (!verifySignature(rawBody, req.headers)) {
-      console.warn("⚠️ Invalid WooCommerce webhook signature");
-      return res.status(401).json({ message: "Invalid webhook signature" });
-    }
-
-    // ✅ Parse JSON payload
     let data;
     try {
       data = JSON.parse(rawBody.toString("utf8"));
@@ -65,13 +47,11 @@ export const handleWooWebhook = async (req, res) => {
     }
 
     const orderId = data.id;
-    console.log(`📦 Webhook received: ${topic} | Delivery ID: ${deliveryId} | Order ID: ${orderId}`);
+    console.log(`📦 Webhook received: ${topic} | Order ID: ${orderId}`);
 
-    // Extract vendorId from meta_data or store
     const vendorMeta = data.meta_data?.find((meta) => meta.key === "_dokan_vendor_id");
     const vendorId = vendorMeta ? vendorMeta.value : data.store?.id || null;
 
-    // ✅ Map WooCommerce order to Mongo schema
     const mappedOrder = {
       orderId,
       status: data.status,
@@ -102,7 +82,6 @@ export const handleWooWebhook = async (req, res) => {
       webhookDeliveryId: deliveryId,
     };
 
-    // ✅ Save or update order in MongoDB
     const updatedOrder = await Order.findOneAndUpdate(
       { orderId },
       { $set: mappedOrder },
@@ -111,15 +90,9 @@ export const handleWooWebhook = async (req, res) => {
 
     console.log(`✅ Order ${orderId} saved/updated in MongoDB (${topic})`);
 
-    // ✅ Send email + SMS only for new orders
     if (topic === "order.created") {
       const { email, phone, name } = mappedOrder.customer;
-
-      // 🧩 Check Twilio config before trying SMS
-      console.log("🧩 Twilio Env Check:", {
-        SID: process.env.TWILIO_SID ? "✅" : "❌ missing",
-        FROM: process.env.TWILIO_PHONE_NUMBER || "❌ missing",
-      });
+      const ownerPhone = process.env.OWNER_PHONE_NUMBER;
 
       // ✉️ Send Email
       if (email) {
@@ -133,25 +106,44 @@ export const handleWooWebhook = async (req, res) => {
         } catch (err) {
           console.error(`❌ Failed to send email for Order #${orderId}:`, err.message);
         }
-      } else {
-        console.warn(`⚠️ No customer email found for Order #${orderId}, skipping email.`);
       }
 
-      // 📱 Send SMS
+      // 📱 Send Customer SMS
       if (phone && phone.trim() !== "") {
         const smsMessage = `Hi ${name || "Customer"}, your order #${orderId} of ₹${mappedOrder.total} has been placed successfully. We'll notify you once it's updated. - Dloklz Store Team`;
         try {
-          const smsResult = await sendSMS(phone, smsMessage);
-          if (smsResult.ok) {
-            console.log(`📩 SMS sent to ${phone} (SID: ${smsResult.sid})`);
-          } else {
-            console.warn(`⚠️ SMS failed for Order #${orderId}: ${smsResult.error}`);
-          }
-        } catch (smsErr) {
-          console.error(`❌ SMS send error for Order #${orderId}:`, smsErr.message);
+          await sendSMS(phone, smsMessage);
+          console.log(`📩 SMS sent to Customer (${phone})`);
+        } catch (err) {
+          console.error(`❌ Failed to send customer SMS:`, err.message);
         }
-      } else {
-        console.warn(`⚠️ No valid phone number for Order #${orderId}, skipping SMS.`);
+      }
+
+      // 📱 Send Owner SMS
+      if (ownerPhone) {
+        const ownerMsg = `📦 New order received!\nOrder #${orderId} | Total: ₹${mappedOrder.total}\nPlease check the dashboard for details.`;
+        try {
+          await sendSMS(ownerPhone, ownerMsg);
+          console.log(`📩 SMS sent to Owner (${ownerPhone})`);
+        } catch (err) {
+          console.error(`❌ Failed to send owner SMS:`, err.message);
+        }
+      }
+
+      // 📱 Send Vendor SMS
+      if (vendorId) {
+        try {
+          const vendor = await Vendor.findOne({ id: vendorId });
+          if (vendor?.phone) {
+            const vendorMsg = `🛍️ You have a new order (#${orderId}). Please prepare the items for processing.`;
+            await sendSMS(vendor.phone, vendorMsg);
+            console.log(`📩 SMS sent to Vendor (${vendor.phone})`);
+          } else {
+            console.warn(`⚠️ Vendor phone not found for vendorId: ${vendorId}`);
+          }
+        } catch (err) {
+          console.error(`❌ Error sending SMS to Vendor (ID: ${vendorId}):`, err.message);
+        }
       }
     }
 

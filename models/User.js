@@ -5,6 +5,7 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   role: { type: String, enum: ["owner", "vendor"], default: "vendor" },
+  vendorId: { type: Number, default: null }, // WooCommerce Vendor ID
 }, { timestamps: true });
 
 export default mongoose.model("User", userSchema);

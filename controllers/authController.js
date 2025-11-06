@@ -4,7 +4,7 @@ import User from "../models/User.js";
 
 // Utility: generate JWT
 const generateToken = (user) => {
-  const payload = { id: user._id, role: user.role };
+  const payload = { id: user._id, role: user.role, vendorId: user.vendorId || null };
   const secret = process.env.JWT_SECRET || "fallback-secret";
   return jwt.sign(payload, secret, { expiresIn: "7d" });
 };
@@ -12,16 +12,18 @@ const generateToken = (user) => {
 // ✅ Register User
 export const register = async (req, res) => {
   try {
-    let { name, email, password, role } = req.body;
+    let { name, email, password, role, vendorId } = req.body;
 
-    if (!name || !email || !password)
+    if (!name || !email || !password) {
       return res.status(400).json({ message: "All fields are required." });
+    }
 
     email = email.toLowerCase().trim();
 
     const existingUser = await User.findOne({ email });
-    if (existingUser)
+    if (existingUser) {
       return res.status(400).json({ message: "User already exists." });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -30,17 +32,20 @@ export const register = async (req, res) => {
       email,
       password: hashedPassword,
       role: role || "user",
+      vendorId: vendorId || null, // 👈 vendor linkage
     });
 
     const token = generateToken(user);
 
     res.status(201).json({
+      success: true,
       message: "User registered successfully.",
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
+        vendorId: user.vendorId,
       },
       token,
     });
@@ -55,28 +60,33 @@ export const login = async (req, res) => {
   try {
     let { email, password } = req.body;
 
-    if (!email || !password)
+    if (!email || !password) {
       return res.status(400).json({ message: "Email and password required." });
+    }
 
     email = email.toLowerCase().trim();
 
     const user = await User.findOne({ email });
-    if (!user)
+    if (!user) {
       return res.status(400).json({ message: "Invalid email or password." });
+    }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch)
+    if (!isMatch) {
       return res.status(400).json({ message: "Invalid email or password." });
+    }
 
     const token = generateToken(user);
 
     res.status(200).json({
+      success: true,
       message: "Login successful.",
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
+        vendorId: user.vendorId,
       },
       token,
     });
@@ -86,21 +96,26 @@ export const login = async (req, res) => {
   }
 };
 
-// (Optional) Refresh Token – can be implemented later
+// ✅ Refresh Token
 export const refreshToken = async (req, res) => {
   try {
     const { token } = req.body;
-    if (!token) return res.status(400).json({ message: "Token missing." });
+    if (!token) {
+      return res.status(400).json({ message: "Token missing." });
+    }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "fallback-secret");
     const user = await User.findById(decoded.id);
 
-    if (!user) return res.status(404).json({ message: "User not found." });
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
 
     const newToken = generateToken(user);
 
-    res.json({ token: newToken });
+    res.json({ success: true, token: newToken });
   } catch (err) {
+    console.error("Refresh Token Error:", err);
     res.status(401).json({ message: "Invalid or expired token." });
   }
 };
