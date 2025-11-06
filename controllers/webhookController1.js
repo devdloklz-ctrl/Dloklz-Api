@@ -67,6 +67,10 @@ export const handleWooWebhook = async (req, res) => {
     const orderId = data.id;
     console.log(`📦 Webhook received: ${topic} | Delivery ID: ${deliveryId} | Order ID: ${orderId}`);
 
+    // Extract vendorId from meta_data or store
+    const vendorMeta = data.meta_data?.find((meta) => meta.key === "_dokan_vendor_id");
+    const vendorId = vendorMeta ? vendorMeta.value : data.store?.id || null;
+
     // ✅ Map WooCommerce order to Mongo schema
     const mappedOrder = {
       orderId,
